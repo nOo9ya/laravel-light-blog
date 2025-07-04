@@ -1,0 +1,402 @@
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Str;
+
+class Comment extends Model
+{
+    /*
+    |--------------------------------------------------------------------------
+    | 모델 속성 (Attributes & Properties)
+    |--------------------------------------------------------------------------
+    */
+    // region --- 모델 속성 ---
+    protected $fillable = [
+        'post_id',
+        'user_id',
+        'guest_name',
+        'guest_email',
+        'guest_password',
+        'parent_id',
+        'depth',
+        'path',
+        'content',
+        'content_html',
+        'status',
+        'ip_address',
+        'user_agent',
+        'spam_score',
+        'detected_links',
+        'og_data',
+        'approved_at',
+        'approved_by',
+    ];
+
+    protected $casts = [
+        'spam_score' => 'array',
+        'detected_links' => 'array',
+        'og_data' => 'array',
+        'approved_at' => 'datetime',
+    ];
+
+    protected $attributes = [
+        'status' => 'pending',
+        'depth' => 0,
+    ];
+
+    protected $hidden = [
+        'guest_password',
+        'ip_address',
+        'user_agent',
+        'spam_score',
+    ];
+    // endregion
+
+    /*
+    |--------------------------------------------------------------------------
+    | 모델 이벤트 (Events)
+    |--------------------------------------------------------------------------
+    */
+    // region --- 모델 이벤트 ---
+    protected static function boot(): void
+    {
+        parent::boot();
+
+        static::creating(function (Comment $comment) {
+            // 회원 댓글은 자동 승인
+            if ($comment->user_id) {
+                $comment->status = 'approved';
+            }
+
+            // 비회원 비밀번호 해시
+            if ($comment->guest_password) {
+                $comment->guest_password = Hash::make($comment->guest_password);
+            }
+
+            // IP 주소 자동 설정
+            if (!$comment->ip_address) {
+                $comment->ip_address = request()->ip();
+            }
+
+            // User Agent 자동 설정
+            if (!$comment->user_agent) {
+                $comment->user_agent = request()->userAgent();
+            }
+
+            // 계층 구조 설정
+            if ($comment->parent_id) {
+                $parent = static::find($comment->parent_id);
+                if ($parent) {
+                    $comment->depth = $parent->depth + 1;
+                    $comment->path = $parent->path . '/' . $parent->id;
+                }
+            } else {
+                $comment->path = '';
+            }
+
+            // 링크 감지 및 HTML 변환
+            $comment->processContent();
+        });
+
+        static::updating(function (Comment $comment) {
+            // 내용이 변경되면 재처리
+            if ($comment->isDirty('content')) {
+                $comment->processContent();
+            }
+        });
+    }
+    // endregion
+
+    /*
+    |--------------------------------------------------------------------------
+    | 관계 (Relationships)
+    |--------------------------------------------------------------------------
+    */
+    // region --- 관계 ---
+    public function post(): BelongsTo
+    {
+        return $this->belongsTo(Post::class);
+    }
+
+    public function user(): BelongsTo
+    {
+        return $this->belongsTo(User::class);
+    }
+
+    public function parent(): BelongsTo
+    {
+        return $this->belongsTo(Comment::class, 'parent_id');
+    }
+
+    public function children(): HasMany
+    {
+        return $this->hasMany(Comment::class, 'parent_id')->orderBy('created_at');
+    }
+
+    public function replies(): HasMany
+    {
+        return $this->hasMany(Comment::class, 'parent_id')
+            ->with(['user', 'replies'])
+            ->approved()
+            ->orderBy('created_at');
+    }
+
+    public function approvedBy(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'approved_by');
+    }
+    // endregion
+
+    /*
+    |--------------------------------------------------------------------------
+    | 스코프 (Scopes)
+    |--------------------------------------------------------------------------
+    */
+    // region --- 스코프 ---
+    public function scopeApproved($query)
+    {
+        return $query->where('status', 'approved');
+    }
+
+    public function scopePending($query)
+    {
+        return $query->where('status', 'pending');
+    }
+
+    public function scopeSpam($query)
+    {
+        return $query->where('status', 'spam');
+    }
+
+    public function scopeTopLevel($query)
+    {
+        return $query->where('parent_id', null);
+    }
+
+    public function scopeReplies($query)
+    {
+        return $query->where('parent_id', '!=', null);
+    }
+
+    public function scopeRecent($query)
+    {
+        return $query->orderBy('created_at', 'desc');
+    }
+
+    public function scopeOldest($query)
+    {
+        return $query->orderBy('created_at', 'asc');
+    }
+
+    public function scopeByPost($query, $postId)
+    {
+        return $query->where('post_id', $postId);
+    }
+    // endregion
+
+    /*
+    |--------------------------------------------------------------------------
+    | 접근자/변경자 (Accessors & Mutators)
+    |--------------------------------------------------------------------------
+    */
+    // region --- 접근자/변경자 ---
+    public function getAuthorNameAttribute(): string
+    {
+        return $this->user ? $this->user->name : ($this->guest_name ?: 'Anonymous');
+    }
+
+    public function getAuthorEmailAttribute(): ?string
+    {
+        return $this->user ? $this->user->email : $this->guest_email;
+    }
+
+    public function getIsGuestAttribute(): bool
+    {
+        return !$this->user_id;
+    }
+
+    public function getIsApprovedAttribute(): bool
+    {
+        return $this->status === 'approved';
+    }
+
+    public function getIsPendingAttribute(): bool
+    {
+        return $this->status === 'pending';
+    }
+
+    public function getIsSpamAttribute(): bool
+    {
+        return $this->status === 'spam';
+    }
+
+    public function getHasRepliesAttribute(): bool
+    {
+        return $this->children()->approved()->exists();
+    }
+
+    public function getRepliesCountAttribute(): int
+    {
+        return $this->children()->approved()->count();
+    }
+    // endregion
+
+    /*
+    |--------------------------------------------------------------------------
+    | 기타 메서드 (Additional Methods)
+    |--------------------------------------------------------------------------
+    */
+    // region --- 기타 메서드 ---
+    public function approve(?User $approvedBy = null): bool
+    {
+        return $this->update([
+            'status' => 'approved',
+            'approved_at' => now(),
+            'approved_by' => $approvedBy?->id ?: auth()->id(),
+        ]);
+    }
+
+    public function markAsSpam(): bool
+    {
+        return $this->update(['status' => 'spam']);
+    }
+
+    public function softDelete(): bool
+    {
+        return $this->update(['status' => 'deleted']);
+    }
+
+    public function verifyGuestPassword(string $password): bool
+    {
+        return $this->is_guest && Hash::check($password, $this->guest_password);
+    }
+
+    protected function processContent(): void
+    {
+        // 링크 감지
+        $this->detectLinks();
+        
+        // HTML 변환 (링크 자동 변환, 줄바꿈 처리)
+        $this->content_html = $this->convertToHtml($this->content);
+        
+        // 스팸 점수 계산
+        $this->calculateSpamScore();
+    }
+
+    protected function detectLinks(): void
+    {
+        $pattern = '/https?:\/\/[^\s<>"\']+/i';
+        preg_match_all($pattern, $this->content, $matches);
+        
+        $links = array_unique($matches[0]);
+        $this->detected_links = $links;
+        
+        // OG 데이터 추출 (첫 번째 링크만)
+        if (!empty($links)) {
+            $this->extractOgData($links[0]);
+        }
+    }
+
+    protected function extractOgData(string $url): void
+    {
+        try {
+            $headers = get_headers($url, 1);
+            $html = file_get_contents($url);
+            
+            if ($html) {
+                $ogData = [];
+                
+                // OG 제목 추출
+                if (preg_match('/<meta property="og:title" content="([^"]*)"/', $html, $matches)) {
+                    $ogData['title'] = $matches[1];
+                }
+                
+                // OG 설명 추출
+                if (preg_match('/<meta property="og:description" content="([^"]*)"/', $html, $matches)) {
+                    $ogData['description'] = $matches[1];
+                }
+                
+                // OG 이미지 추출
+                if (preg_match('/<meta property="og:image" content="([^"]*)"/', $html, $matches)) {
+                    $ogData['image'] = $matches[1];
+                }
+                
+                $this->og_data = !empty($ogData) ? $ogData : null;
+            }
+        } catch (\Exception $e) {
+            // OG 데이터 추출 실패 시 무시
+            $this->og_data = null;
+        }
+    }
+
+    protected function convertToHtml(string $content): string
+    {
+        // HTML 이스케이프
+        $html = htmlspecialchars($content, ENT_QUOTES, 'UTF-8');
+        
+        // 줄바꿈을 <br>로 변환
+        $html = nl2br($html);
+        
+        // 링크 자동 변환
+        $pattern = '/https?:\/\/[^\s<>"\']+/i';
+        $html = preg_replace($pattern, '<a href="$0" target="_blank" rel="noopener noreferrer">$0</a>', $html);
+        
+        return $html;
+    }
+
+    protected function calculateSpamScore(): void
+    {
+        $score = 0;
+        $factors = [];
+        
+        // 링크 개수
+        $linkCount = count($this->detected_links ?? []);
+        if ($linkCount > 2) {
+            $score += $linkCount * 10;
+            $factors[] = "너무 많은 링크 ({$linkCount}개)";
+        }
+        
+        // 대문자 비율
+        $upperCaseRatio = 0;
+        if (strlen($this->content) > 0) {
+            $upperCaseCount = strlen(preg_replace('/[^A-Z]/', '', $this->content));
+            $upperCaseRatio = $upperCaseCount / strlen($this->content);
+            if ($upperCaseRatio > 0.5) {
+                $score += 30;
+                $factors[] = "과도한 대문자 사용";
+            }
+        }
+        
+        // 반복 문자
+        if (preg_match('/(.)\1{4,}/', $this->content)) {
+            $score += 20;
+            $factors[] = "반복 문자 패턴";
+        }
+        
+        // 스팸 키워드 (간단한 예시)
+        $spamKeywords = ['free', '무료', '돈', '대출', '바카라', '카지노'];
+        foreach ($spamKeywords as $keyword) {
+            if (stripos($this->content, $keyword) !== false) {
+                $score += 15;
+                $factors[] = "스팸 키워드 감지: {$keyword}";
+            }
+        }
+        
+        $this->spam_score = [
+            'score' => $score,
+            'factors' => $factors,
+            'calculated_at' => now()->toISOString(),
+        ];
+        
+        // 높은 스팸 점수시 자동으로 스팸으로 분류
+        if ($score >= 50) {
+            $this->status = 'spam';
+        }
+    }
+    // endregion
+}

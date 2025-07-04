@@ -20,6 +20,7 @@ class User extends Authenticatable
         'name',
         'email',
         'password',
+        'role',
     ];
 
     /**
@@ -43,5 +44,37 @@ class User extends Authenticatable
             'email_verified_at' => 'datetime',
             'password' => 'hashed',
         ];
+    }
+
+    /**
+     * 사용자가 관리자인지 확인
+     */
+    public function isAdmin(): bool
+    {
+        return $this->role === 'admin';
+    }
+
+    /**
+     * 사용자가 작성자인지 확인
+     */
+    public function isAuthor(): bool
+    {
+        return $this->role === 'author';
+    }
+
+    /**
+     * 특정 역할을 가지고 있는지 확인
+     */
+    public function hasRole(string $role): bool
+    {
+        return $this->role === $role;
+    }
+
+    /**
+     * 역할 할당 (테스트 호환성)
+     */
+    public function assignRole(string $role): void
+    {
+        $this->update(['role' => $role]);
     }
 }
