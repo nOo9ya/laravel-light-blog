@@ -305,25 +305,59 @@ class Comment extends Model
     protected function extractOgData(string $url): void
     {
         try {
-            $headers = get_headers($url, 1);
-            $html = file_get_contents($url);
+            // URL 검증 및 보안 강화
+            if (!filter_var($url, FILTER_VALIDATE_URL) || 
+                !in_array(parse_url($url, PHP_URL_SCHEME), ['http', 'https'])) {
+                $this->og_data = null;
+                return;
+            }
+
+            // 로컬 IP 및 사설 IP 차단
+            $host = parse_url($url, PHP_URL_HOST);
+            $ip = gethostbyname($host);
+            
+            if (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE) === false) {
+                $this->og_data = null;
+                return;
+            }
+
+            // HTTP 클라이언트 설정 (보안 강화)
+            $context = stream_context_create([
+                'http' => [
+                    'method' => 'GET',
+                    'timeout' => 5,
+                    'max_redirects' => 3,
+                    'user_agent' => 'Laravel Light Blog OG Parser/1.0',
+                    'header' => [
+                        'Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                        'Accept-Language: en-US,en;q=0.5',
+                        'Accept-Encoding: gzip, deflate',
+                        'Connection: close',
+                    ]
+                ]
+            ]);
+
+            $html = @file_get_contents($url, false, $context, 0, 1024 * 50); // 50KB 제한
             
             if ($html) {
                 $ogData = [];
                 
-                // OG 제목 추출
-                if (preg_match('/<meta property="og:title" content="([^"]*)"/', $html, $matches)) {
-                    $ogData['title'] = $matches[1];
+                // OG 제목 추출 (XSS 방지)
+                if (preg_match('/<meta\s+property=["\']og:title["\']\s+content=["\']([^"\']*)["\'][^>]*>/i', $html, $matches)) {
+                    $ogData['title'] = htmlspecialchars(trim($matches[1]), ENT_QUOTES, 'UTF-8');
                 }
                 
-                // OG 설명 추출
-                if (preg_match('/<meta property="og:description" content="([^"]*)"/', $html, $matches)) {
-                    $ogData['description'] = $matches[1];
+                // OG 설명 추출 (XSS 방지)
+                if (preg_match('/<meta\s+property=["\']og:description["\']\s+content=["\']([^"\']*)["\'][^>]*>/i', $html, $matches)) {
+                    $ogData['description'] = htmlspecialchars(trim($matches[1]), ENT_QUOTES, 'UTF-8');
                 }
                 
-                // OG 이미지 추출
-                if (preg_match('/<meta property="og:image" content="([^"]*)"/', $html, $matches)) {
-                    $ogData['image'] = $matches[1];
+                // OG 이미지 추출 (URL 검증)
+                if (preg_match('/<meta\s+property=["\']og:image["\']\s+content=["\']([^"\']*)["\'][^>]*>/i', $html, $matches)) {
+                    $imageUrl = trim($matches[1]);
+                    if (filter_var($imageUrl, FILTER_VALIDATE_URL)) {
+                        $ogData['image'] = htmlspecialchars($imageUrl, ENT_QUOTES, 'UTF-8');
+                    }
                 }
                 
                 $this->og_data = !empty($ogData) ? $ogData : null;
@@ -342,9 +376,38 @@ class Comment extends Model
         // 줄바꿈을 <br>로 변환
         $html = nl2br($html);
         
-        // 링크 자동 변환
+        // 링크 자동 변환 (보안 강화)
         $pattern = '/https?:\/\/[^\s<>"\']+/i';
-        $html = preg_replace($pattern, '<a href="$0" target="_blank" rel="noopener noreferrer">$0</a>', $html);
+        $html = preg_replace_callback($pattern, function($matches) {
+            $url = $matches[0];
+            
+            // URL 검증
+            if (!filter_var($url, FILTER_VALIDATE_URL)) {
+                return $url;
+            }
+            
+            // 위험한 스킴 차단
+            $scheme = parse_url($url, PHP_URL_SCHEME);
+            if (!in_array($scheme, ['http', 'https'])) {
+                return $url;
+            }
+            
+            // 로컬 IP 차단
+            $host = parse_url($url, PHP_URL_HOST);
+            if ($host) {
+                $ip = gethostbyname($host);
+                if (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE) === false) {
+                    return $url;
+                }
+            }
+            
+            // 안전한 링크로 변환
+            $safeUrl = htmlspecialchars($url, ENT_QUOTES, 'UTF-8');
+            $displayUrl = strlen($url) > 50 ? substr($url, 0, 47) . '...' : $url;
+            $safeDisplayUrl = htmlspecialchars($displayUrl, ENT_QUOTES, 'UTF-8');
+            
+            return '<a href="' . $safeUrl . '" target="_blank" rel="noopener noreferrer nofollow">' . $safeDisplayUrl . '</a>';
+        }, $html);
         
         return $html;
     }

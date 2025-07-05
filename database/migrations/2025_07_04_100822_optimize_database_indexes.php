@@ -12,61 +12,74 @@ return new class extends Migration
     public function up(): void
     {
         // Posts 테이블 인덱스 최적화
-        Schema::table('posts', function (Blueprint $table) {
-            // 성능 최적화를 위한 복합 인덱스
-            $table->index(['status', 'published_at'], 'idx_posts_status_published');
-            $table->index(['category_id', 'status', 'published_at'], 'idx_posts_category_status_published');
-            $table->index(['user_id', 'status', 'created_at'], 'idx_posts_user_status_created');
-            $table->index(['slug'], 'idx_posts_slug');
-            $table->index(['views'], 'idx_posts_views');
-            
-            // 검색 최적화를 위한 인덱스
-            $table->index(['title'], 'idx_posts_title');
-        });
+        try {
+            Schema::table('posts', function (Blueprint $table) {
+                $table->index(['category_id', 'status', 'published_at']);
+                $table->index(['user_id', 'status', 'created_at']);
+                $table->index(['views_count']);
+                $table->index(['title']);
+            });
+        } catch (\Exception $e) {
+            // 이미 존재하는 인덱스 무시
+        }
 
         // Categories 테이블 인덱스 최적화
-        Schema::table('categories', function (Blueprint $table) {
-            $table->index(['parent_id', 'type', 'active'], 'idx_categories_parent_type_active');
-            $table->index(['slug'], 'idx_categories_slug');
-            $table->index(['type', 'active', 'order'], 'idx_categories_type_active_order');
-        });
-
-        // Tags 테이블 인덱스 최적화
-        Schema::table('tags', function (Blueprint $table) {
-            $table->index(['slug'], 'idx_tags_slug');
-            $table->index(['post_count'], 'idx_tags_post_count');
-        });
+        try {
+            Schema::table('categories', function (Blueprint $table) {
+                $table->index(['parent_id', 'type', 'is_active']);
+                $table->index(['type', 'is_active', 'sort_order']);
+            });
+        } catch (\Exception $e) {
+            // 이미 존재하는 인덱스 무시
+        }
 
         // Post_tag 피벗 테이블 인덱스 최적화
-        Schema::table('post_tag', function (Blueprint $table) {
-            $table->index(['tag_id', 'post_id'], 'idx_post_tag_tag_post');
-        });
+        try {
+            Schema::table('post_tag', function (Blueprint $table) {
+                $table->index(['tag_id', 'post_id']);
+            });
+        } catch (\Exception $e) {
+            // 이미 존재하는 인덱스 무시
+        }
 
         // Comments 테이블 인덱스 최적화
-        Schema::table('comments', function (Blueprint $table) {
-            $table->index(['post_id', 'status', 'created_at'], 'idx_comments_post_status_created');
-            $table->index(['parent_id'], 'idx_comments_parent');
-            $table->index(['status', 'created_at'], 'idx_comments_status_created');
-            $table->index(['email'], 'idx_comments_email');
-        });
+        try {
+            Schema::table('comments', function (Blueprint $table) {
+                $table->index(['post_id', 'status', 'created_at']);
+                $table->index(['status', 'created_at']);
+                $table->index(['author_email']);
+            });
+        } catch (\Exception $e) {
+            // 이미 존재하는 인덱스 무시
+        }
 
         // Pages 테이블 인덱스 최적화
-        Schema::table('pages', function (Blueprint $table) {
-            $table->index(['slug'], 'idx_pages_slug');
-            $table->index(['status', 'created_at'], 'idx_pages_status_created');
-        });
+        try {
+            Schema::table('pages', function (Blueprint $table) {
+                $table->index(['is_published', 'created_at']);
+            });
+        } catch (\Exception $e) {
+            // 이미 존재하는 인덱스 무시
+        }
 
         // Seo_metas 테이블 인덱스 최적화
-        Schema::table('seo_metas', function (Blueprint $table) {
-            $table->index(['post_id'], 'idx_seo_metas_post');
-        });
+        try {
+            Schema::table('seo_metas', function (Blueprint $table) {
+                $table->index(['seoable_type', 'seoable_id']);
+            });
+        } catch (\Exception $e) {
+            // 이미 존재하는 인덱스 무시
+        }
 
-        // Users 테이블 인덱스 최적화 (이미 있을 수 있음)
-        Schema::table('users', function (Blueprint $table) {
-            // email은 이미 unique 인덱스가 있음
-            $table->index(['role'], 'idx_users_role');
-            $table->index(['created_at'], 'idx_users_created');
-        });
+        // Users 테이블 인덱스 최적화
+        try {
+            Schema::table('users', function (Blueprint $table) {
+                $table->index(['role']);
+                $table->index(['created_at']);
+            });
+        } catch (\Exception $e) {
+            // 이미 존재하는 인덱스 무시
+        }
 
         // Cache 테이블 생성 (파일 캐시가 아닌 DB 캐시 사용시)
         if (!Schema::hasTable('cache')) {
@@ -75,7 +88,7 @@ return new class extends Migration
                 $table->mediumText('value');
                 $table->integer('expiration');
                 
-                $table->index(['expiration'], 'idx_cache_expiration');
+                $table->index(['expiration']);
             });
         }
 
@@ -86,7 +99,7 @@ return new class extends Migration
                 $table->string('owner');
                 $table->integer('expiration');
                 
-                $table->index(['expiration'], 'idx_cache_locks_expiration');
+                $table->index(['expiration']);
             });
         }
     }
@@ -96,61 +109,73 @@ return new class extends Migration
      */
     public function down(): void
     {
-        // Posts 테이블 인덱스 제거
-        Schema::table('posts', function (Blueprint $table) {
-            $table->dropIndex('idx_posts_status_published');
-            $table->dropIndex('idx_posts_category_status_published');
-            $table->dropIndex('idx_posts_user_status_created');
-            $table->dropIndex('idx_posts_slug');
-            $table->dropIndex('idx_posts_views');
-            $table->dropIndex('idx_posts_title');
-        });
+        // 인덱스 제거 (존재하지 않을 수 있으므로 try-catch 사용)
+        try {
+            Schema::table('posts', function (Blueprint $table) {
+                $table->dropIndex(['category_id', 'status', 'published_at']);
+                $table->dropIndex(['user_id', 'status', 'created_at']);
+                $table->dropIndex(['views_count']);
+                $table->dropIndex(['title']);
+            });
+        } catch (\Exception $e) {
+            // 인덱스가 존재하지 않을 수 있음
+        }
 
-        // Categories 테이블 인덱스 제거
-        Schema::table('categories', function (Blueprint $table) {
-            $table->dropIndex('idx_categories_parent_type_active');
-            $table->dropIndex('idx_categories_slug');
-            $table->dropIndex('idx_categories_type_active_order');
-        });
+        try {
+            Schema::table('categories', function (Blueprint $table) {
+                $table->dropIndex(['parent_id', 'type', 'is_active']);
+                $table->dropIndex(['type', 'is_active', 'sort_order']);
+            });
+        } catch (\Exception $e) {
+            // 인덱스가 존재하지 않을 수 있음
+        }
 
-        // Tags 테이블 인덱스 제거
-        Schema::table('tags', function (Blueprint $table) {
-            $table->dropIndex('idx_tags_slug');
-            $table->dropIndex('idx_tags_post_count');
-        });
+        try {
+            Schema::table('post_tag', function (Blueprint $table) {
+                $table->dropIndex(['tag_id', 'post_id']);
+            });
+        } catch (\Exception $e) {
+            // 인덱스가 존재하지 않을 수 있음
+        }
 
-        // Post_tag 테이블 인덱스 제거
-        Schema::table('post_tag', function (Blueprint $table) {
-            $table->dropIndex('idx_post_tag_tag_post');
-        });
+        try {
+            Schema::table('comments', function (Blueprint $table) {
+                $table->dropIndex(['post_id', 'status', 'created_at']);
+                $table->dropIndex(['status', 'created_at']);
+                $table->dropIndex(['author_email']);
+            });
+        } catch (\Exception $e) {
+            // 인덱스가 존재하지 않을 수 있음
+        }
 
-        // Comments 테이블 인덱스 제거
-        Schema::table('comments', function (Blueprint $table) {
-            $table->dropIndex('idx_comments_post_status_created');
-            $table->dropIndex('idx_comments_parent');
-            $table->dropIndex('idx_comments_status_created');
-            $table->dropIndex('idx_comments_email');
-        });
+        try {
+            Schema::table('pages', function (Blueprint $table) {
+                $table->dropIndex(['is_published', 'created_at']);
+            });
+        } catch (\Exception $e) {
+            // 인덱스가 존재하지 않을 수 있음
+        }
 
-        // Pages 테이블 인덱스 제거
-        Schema::table('pages', function (Blueprint $table) {
-            $table->dropIndex('idx_pages_slug');
-            $table->dropIndex('idx_pages_status_created');
-        });
+        try {
+            Schema::table('seo_metas', function (Blueprint $table) {
+                $table->dropIndex(['seoable_type', 'seoable_id']);
+            });
+        } catch (\Exception $e) {
+            // 인덱스가 존재하지 않을 수 있음
+        }
 
-        // Seo_metas 테이블 인덱스 제거
-        Schema::table('seo_metas', function (Blueprint $table) {
-            $table->dropIndex('idx_seo_metas_post');
-        });
-
-        // Users 테이블 인덱스 제거
-        Schema::table('users', function (Blueprint $table) {
-            $table->dropIndex('idx_users_role');
-            $table->dropIndex('idx_users_created');
-        });
+        try {
+            Schema::table('users', function (Blueprint $table) {
+                $table->dropIndex(['role']);
+                $table->dropIndex(['created_at']);
+            });
+        } catch (\Exception $e) {
+            // 인덱스가 존재하지 않을 수 있음
+        }
 
         // Cache 테이블 제거
         Schema::dropIfExists('cache_locks');
         Schema::dropIfExists('cache');
     }
+
 };

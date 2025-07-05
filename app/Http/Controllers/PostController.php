@@ -8,8 +8,10 @@ use App\Models\Tag;
 use App\Models\Analytics;
 use App\Services\ImageService;
 use App\Services\CacheService;
+use App\Http\Resources\PostResource;
 use Illuminate\Http\Request;
 use Illuminate\Http\RedirectResponse;
+use Illuminate\Http\JsonResponse;
 use Illuminate\View\View;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
@@ -388,5 +390,101 @@ class PostController extends Controller
                 'message' => $e->getMessage()
             ], 400);
         }
+    }
+
+    /**
+     * API: 포스트 목록 조회
+     */
+    public function apiIndex(Request $request): JsonResponse
+    {
+        $query = Post::published()
+            ->with(['category', 'tags', 'user'])
+            ->latest('published_at');
+
+        // 카테고리 필터링
+        if ($request->filled('category')) {
+            $category = Category::where('slug', $request->category)->first();
+            if ($category) {
+                $query->where('category_id', $category->id);
+            }
+        }
+
+        // 태그 필터링
+        if ($request->filled('tag')) {
+            $tag = Tag::where('slug', $request->tag)->first();
+            if ($tag) {
+                $query->whereHas('tags', function ($q) use ($tag) {
+                    $q->where('tags.id', $tag->id);
+                });
+            }
+        }
+
+        // 검색
+        if ($request->filled('search')) {
+            $search = $request->search;
+            $query->where(function ($q) use ($search) {
+                $q->where('title', 'like', "%{$search}%")
+                  ->orWhere('content', 'like', "%{$search}%")
+                  ->orWhere('summary', 'like', "%{$search}%");
+            });
+        }
+
+        $posts = $query->paginate($request->get('per_page', 12));
+
+        return response()->json([
+            'success' => true,
+            'data' => PostResource::collection($posts),
+            'meta' => [
+                'current_page' => $posts->currentPage(),
+                'last_page' => $posts->lastPage(),
+                'per_page' => $posts->perPage(),
+                'total' => $posts->total(),
+            ]
+        ]);
+    }
+
+    /**
+     * API: 포스트 상세 조회
+     */
+    public function apiShow(Post $post): JsonResponse
+    {
+        $post->load(['category', 'tags', 'user', 'seoMeta']);
+        
+        // 조회수 증가
+        $post->increment('views_count');
+
+        return response()->json([
+            'success' => true,
+            'data' => new PostResource($post)
+        ]);
+    }
+
+    /**
+     * API: 관련 포스트 조회
+     */
+    public function related(Post $post): JsonResponse
+    {
+        $relatedPosts = Post::published()
+            ->where('id', '!=', $post->id)
+            ->where(function ($query) use ($post) {
+                // 같은 카테고리
+                $query->where('category_id', $post->category_id);
+                
+                // 또는 공통 태그가 있는 포스트
+                if ($post->tags->count() > 0) {
+                    $query->orWhereHas('tags', function ($q) use ($post) {
+                        $q->whereIn('tags.id', $post->tags->pluck('id'));
+                    });
+                }
+            })
+            ->with(['category', 'tags', 'user'])
+            ->orderByDesc('published_at')
+            ->limit(5)
+            ->get();
+
+        return response()->json([
+            'success' => true,
+            'data' => PostResource::collection($relatedPosts)
+        ]);
     }
 }

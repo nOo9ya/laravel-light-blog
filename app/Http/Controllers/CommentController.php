@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Models\Comment;
 use App\Models\Post;
+use App\Http\Resources\CommentResource;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
@@ -312,6 +313,130 @@ class CommentController extends Controller
             return response()->json([
                 'success' => false,
                 'message' => '일괄 처리 중 오류가 발생했습니다.',
+            ], 500);
+        }
+    }
+
+    /**
+     * API: 포스트의 댓글 목록 조회
+     */
+    public function apiIndex(Post $post, Request $request): JsonResponse
+    {
+        $query = $post->comments()
+            ->approved()
+            ->whereNull('parent_id')
+            ->with(['user', 'children' => function ($q) {
+                $q->approved()->with('user');
+            }])
+            ->latest();
+
+        $comments = $query->paginate($request->get('per_page', 10));
+
+        return response()->json([
+            'success' => true,
+            'data' => CommentResource::collection($comments),
+            'meta' => [
+                'current_page' => $comments->currentPage(),
+                'last_page' => $comments->lastPage(),
+                'per_page' => $comments->perPage(),
+                'total' => $comments->total(),
+            ]
+        ]);
+    }
+
+    /**
+     * API: 댓글 스레드 조회
+     */
+    public function thread(Comment $comment): JsonResponse
+    {
+        $comment->load([
+            'children' => function ($query) {
+                $query->approved()->with('user')->latest();
+            },
+            'user'
+        ]);
+
+        return response()->json([
+            'success' => true,
+            'data' => new CommentResource($comment)
+        ]);
+    }
+
+    /**
+     * API: 형제 댓글 조회
+     */
+    public function siblings(Comment $comment): JsonResponse
+    {
+        $siblings = Comment::approved()
+            ->where('post_id', $comment->post_id)
+            ->where('parent_id', $comment->parent_id)
+            ->where('id', '!=', $comment->id)
+            ->with('user')
+            ->latest()
+            ->limit(5)
+            ->get();
+
+        return response()->json([
+            'success' => true,
+            'data' => CommentResource::collection($siblings)
+        ]);
+    }
+
+    /**
+     * 댓글 답글 폼 표시
+     */
+    public function reply(Comment $comment): View
+    {
+        return view(themed('comments.reply'), compact('comment'));
+    }
+
+    /**
+     * 댓글 신고
+     */
+    public function report(Request $request, Comment $comment): JsonResponse
+    {
+        $validated = $request->validate([
+            'reason' => 'required|in:spam,inappropriate,offensive,other',
+            'description' => 'nullable|string|max:500',
+        ]);
+
+        try {
+            // 이미 신고된 댓글인지 확인 (IP 기반)
+            $userIp = $request->ip();
+            $alreadyReported = $comment->reports()
+                ->where('reporter_ip', $userIp)
+                ->exists();
+
+            if ($alreadyReported) {
+                return response()->json([
+                    'success' => false,
+                    'message' => '이미 신고한 댓글입니다.'
+                ], 409);
+            }
+
+            // 신고 기록 생성
+            $comment->reports()->create([
+                'reason' => $validated['reason'],
+                'description' => $validated['description'],
+                'reporter_ip' => $userIp,
+                'reporter_user_agent' => $request->userAgent(),
+            ]);
+
+            // 신고 횟수가 일정 수준 이상이면 자동으로 검토 대기 상태로 변경
+            $reportCount = $comment->reports()->count();
+            if ($reportCount >= 3 && $comment->status === 'approved') {
+                $comment->update(['status' => 'pending']);
+            }
+
+            return response()->json([
+                'success' => true,
+                'message' => '댓글이 신고되었습니다. 관리자가 검토 후 조치하겠습니다.'
+            ]);
+
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => '신고 처리 중 오류가 발생했습니다.'
             ], 500);
         }
     }

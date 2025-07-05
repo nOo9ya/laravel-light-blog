@@ -7,9 +7,13 @@ use App\Models\Page;
 use App\Models\Category;
 use App\Models\Tag;
 use App\Models\Analytics;
+use App\Http\Resources\PostResource;
+use App\Http\Resources\PageResource;
 use Illuminate\Http\Request;
+use Illuminate\Http\JsonResponse;
 use Illuminate\Contracts\View\View;
 use Illuminate\Http\RedirectResponse;
+use Illuminate\Support\Facades\Cache;
 
 class SearchController extends Controller
 {
@@ -195,5 +199,226 @@ class SearchController extends Controller
         }
         
         return response()->json($suggestions);
+    }
+
+    /**
+     * 검색 제안 (AJAX용)
+     */
+    public function suggestions(Request $request): JsonResponse
+    {
+        $query = $request->input('q');
+        
+        if (strlen($query) < 2) {
+            return response()->json([
+                'success' => true,
+                'suggestions' => []
+            ]);
+        }
+        
+        $cacheKey = 'search_suggestions_' . md5($query);
+        
+        $suggestions = Cache::remember($cacheKey, 300, function () use ($query) {
+            $results = [];
+            
+            // 포스트 제목 검색
+            $posts = Post::published()
+                ->where('title', 'like', "%{$query}%")
+                ->select('title', 'slug')
+                ->limit(8)
+                ->get();
+                
+            foreach ($posts as $post) {
+                $results[] = [
+                    'type' => 'post',
+                    'title' => $post->title,
+                    'url' => route('posts.show', $post->slug),
+                    'icon' => 'document'
+                ];
+            }
+            
+            // 카테고리 검색
+            $categories = Category::where('name', 'like', "%{$query}%")
+                ->select('name', 'slug')
+                ->limit(3)
+                ->get();
+                
+            foreach ($categories as $category) {
+                $results[] = [
+                    'type' => 'category',
+                    'title' => $category->name,
+                    'url' => route('categories.show', $category->slug),
+                    'icon' => 'folder'
+                ];
+            }
+            
+            // 태그 검색
+            $tags = Tag::where('name', 'like', "%{$query}%")
+                ->select('name', 'slug')
+                ->limit(3)
+                ->get();
+                
+            foreach ($tags as $tag) {
+                $results[] = [
+                    'type' => 'tag',
+                    'title' => $tag->name,
+                    'url' => route('tags.show', $tag->slug),
+                    'icon' => 'tag'
+                ];
+            }
+            
+            return $results;
+        });
+        
+        return response()->json([
+            'success' => true,
+            'suggestions' => $suggestions
+        ]);
+    }
+
+    /**
+     * API: 통합 검색
+     */
+    public function apiSearch(Request $request): JsonResponse
+    {
+        $query = $request->input('q');
+        $type = $request->input('type', 'all');
+        $perPage = $request->input('per_page', 10);
+        
+        if (empty($query)) {
+            return response()->json([
+                'success' => false,
+                'message' => '검색어를 입력해주세요.'
+            ], 400);
+        }
+        
+        $results = [];
+        $total = 0;
+        
+        switch ($type) {
+            case 'post':
+                $posts = $this->searchPosts($query);
+                $results = [
+                    'posts' => PostResource::collection($posts),
+                    'meta' => [
+                        'current_page' => $posts->currentPage(),
+                        'last_page' => $posts->lastPage(),
+                        'total' => $posts->total()
+                    ]
+                ];
+                $total = $posts->total();
+                break;
+                
+            case 'page':
+                $pages = $this->searchPages($query);
+                $results = [
+                    'pages' => PageResource::collection($pages),
+                    'meta' => [
+                        'current_page' => $pages->currentPage(),
+                        'last_page' => $pages->lastPage(),
+                        'total' => $pages->total()
+                    ]
+                ];
+                $total = $pages->total();
+                break;
+                
+            default: // 통합 검색
+                $posts = $this->searchPosts($query);
+                $pages = $this->searchPages($query);
+                
+                $results = [
+                    'posts' => PostResource::collection($posts),
+                    'pages' => PageResource::collection($pages),
+                    'posts_meta' => [
+                        'current_page' => $posts->currentPage(),
+                        'last_page' => $posts->lastPage(),
+                        'total' => $posts->total()
+                    ],
+                    'pages_meta' => [
+                        'current_page' => $pages->currentPage(),
+                        'last_page' => $pages->lastPage(),
+                        'total' => $pages->total()
+                    ]
+                ];
+                $total = $posts->total() + $pages->total();
+                break;
+        }
+        
+        // 검색 통계 기록
+        Analytics::recordSearch($query, $total, $type, $request, auth()->user());
+        
+        return response()->json([
+            'success' => true,
+            'query' => $query,
+            'type' => $type,
+            'total' => $total,
+            'data' => $results
+        ]);
+    }
+
+    /**
+     * API: 인기 검색어
+     */
+    public function popular(Request $request): JsonResponse
+    {
+        $limit = $request->input('limit', 10);
+        
+        // 최근 30일간 인기 검색어
+        $popularSearches = Analytics::where('event_type', 'search')
+            ->where('created_at', '>=', now()->subDays(30))
+            ->selectRaw('event_data, COUNT(*) as search_count')
+            ->groupBy('event_data')
+            ->orderBy('search_count', 'desc')
+            ->limit($limit)
+            ->get()
+            ->map(function ($item) {
+                $data = json_decode($item->event_data, true);
+                return [
+                    'query' => $data['query'] ?? '',
+                    'count' => $item->search_count
+                ];
+            })
+            ->filter(function ($item) {
+                return !empty($item['query']);
+            })
+            ->values();
+        
+        return response()->json([
+            'success' => true,
+            'data' => $popularSearches
+        ]);
+    }
+
+    /**
+     * API: 최근 검색어 (현재 사용자)
+     */
+    public function recent(Request $request): JsonResponse
+    {
+        $limit = $request->input('limit', 10);
+        $userIp = $request->ip();
+        
+        // 현재 사용자(IP 기준)의 최근 검색어
+        $recentSearches = Analytics::where('event_type', 'search')
+            ->where('ip', $userIp)
+            ->where('created_at', '>=', now()->subDays(7))
+            ->orderBy('created_at', 'desc')
+            ->limit($limit)
+            ->get()
+            ->map(function ($item) {
+                $data = json_decode($item->event_data, true);
+                return [
+                    'query' => $data['query'] ?? '',
+                    'searched_at' => $item->created_at->format('Y-m-d H:i:s')
+                ];
+            })
+            ->filter(function ($item) {
+                return !empty($item['query']);
+            })
+            ->unique('query')
+            ->values();
+        
+        return response()->json([
+            'success' => true,
+            'data' => $recentSearches
+        ]);
     }
 }
