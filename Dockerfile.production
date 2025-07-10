@@ -1,0 +1,150 @@
+# =============================================================================
+# 멀티스테이지 빌드를 활용한 Laravel Light Blog 최적화 Dockerfile
+# 용량 최적화: 불필요한 의존성 제거 및 레이어 최소화
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Stage 1: Composer 의존성 설치 (PHP Dependencies Builder)
+# -----------------------------------------------------------------------------
+FROM composer:latest as composer-builder
+
+WORKDIR /app
+
+# Composer 파일들만 먼저 복사 (캐시 최적화)
+COPY composer.json composer.lock ./
+
+# 프로덕션 의존성만 설치 (개발 의존성 제외)
+RUN composer install \
+    --no-dev \
+    --no-scripts \
+    --no-autoloader \
+    --optimize-autoloader \
+    --prefer-dist \
+    --no-interaction
+
+# -----------------------------------------------------------------------------
+# Stage 2: Node.js 의존성 및 프론트엔드 빌드 (Frontend Builder)
+# -----------------------------------------------------------------------------
+FROM node:18-alpine as frontend-builder
+
+WORKDIR /app
+
+# Package.json 파일들만 먼저 복사 (캐시 최적화)
+COPY package*.json ./
+COPY vite.config.js tailwind.config.js postcss.config.js ./
+
+# Node.js 의존성 설치 (프로덕션 의존성만)
+RUN npm ci --only=production --silent
+
+# 소스 코드 복사 및 빌드
+COPY resources/ ./resources/
+COPY public/ ./public/
+
+# 프론트엔드 에셋 빌드
+RUN npm run build
+
+# -----------------------------------------------------------------------------
+# Stage 3: 최종 프로덕션 이미지 (Runtime)
+# -----------------------------------------------------------------------------
+FROM php:8.3-fpm-alpine as production
+
+# 메타데이터 라벨
+LABEL maintainer="Laravel Light Blog" \
+      version="1.0.0" \
+      description="Optimized Laravel Light Blog Production Image"
+
+# 필수 시스템 패키지만 설치 (Alpine Linux 사용으로 용량 최소화)
+RUN apk add --no-cache \
+    # 런타임 라이브러리
+    libpng \
+    libjpeg-turbo \
+    libwebp \
+    freetype \
+    libzip \
+    # 빌드 도구 (필요한 것만)
+    $PHPIZE_DEPS \
+    libpng-dev \
+    libjpeg-turbo-dev \
+    libwebp-dev \
+    freetype-dev \
+    libzip-dev \
+    # 시스템 유틸리티
+    supervisor \
+    && docker-php-ext-configure gd \
+        --with-freetype \
+        --with-jpeg \
+        --with-webp \
+    && docker-php-ext-install -j$(nproc) \
+        pdo_mysql \
+        mbstring \
+        exif \
+        pcntl \
+        bcmath \
+        gd \
+        zip \
+        opcache \
+    # 빌드 의존성 제거 (이미지 크기 축소)
+    && apk del $PHPIZE_DEPS \
+        libpng-dev \
+        libjpeg-turbo-dev \
+        libwebp-dev \
+        freetype-dev \
+        libzip-dev \
+    && rm -rf /var/cache/apk/*
+
+# 작업 디렉토리 설정
+WORKDIR /var/www/html
+
+# 사용자 및 그룹 생성 (Alpine 방식)
+RUN addgroup -g 1000 www && \
+    adduser -u 1000 -G www -s /bin/sh -D www
+
+# PHP 설정 파일 복사 (캐시 레이어 최적화)
+COPY docker/php/php.ini /usr/local/etc/php/php.ini
+COPY docker/php/opcache.ini /usr/local/etc/php/conf.d/opcache.ini
+
+# Supervisor 설정 복사
+COPY docker/supervisor/supervisord.conf /etc/supervisor/conf.d/supervisord.conf
+
+# Laravel 애플리케이션 파일 복사 (선택적 복사로 레이어 최적화)
+COPY --chown=www:www app/ ./app/
+COPY --chown=www:www bootstrap/ ./bootstrap/
+COPY --chown=www:www config/ ./config/
+COPY --chown=www:www database/ ./database/
+COPY --chown=www:www resources/lang/ ./resources/lang/
+COPY --chown=www:www resources/views/ ./resources/views/
+COPY --chown=www:www routes/ ./routes/
+COPY --chown=www:www storage/ ./storage/
+COPY --chown=www:www artisan composer.json composer.lock ./
+
+# Composer에서 빌드된 vendor 디렉토리 복사
+COPY --from=composer-builder --chown=www:www /app/vendor ./vendor
+
+# 프론트엔드에서 빌드된 public 디렉토리 복사
+COPY --from=frontend-builder --chown=www:www /app/public ./public
+
+# Laravel 캐시 생성 (한 번에 실행하여 레이어 최소화)
+RUN php artisan config:cache && \
+    php artisan route:cache && \
+    php artisan view:cache && \
+    php artisan event:cache
+
+# 권한 설정 (보안을 위한 최소 권한)
+RUN chmod -R 755 ./storage ./bootstrap/cache && \
+    chown -R www:www ./storage ./bootstrap/cache
+
+# Laravel Scheduler를 위한 크론 작업 설정
+RUN echo "* * * * * www cd /var/www/html && php artisan schedule:run >> /dev/null 2>&1" > /etc/crontabs/www
+
+# 포트 노출
+EXPOSE 9000
+
+# 사용자 변경 (보안 강화)
+USER www
+
+# 헬스체크 추가 (선택사항)
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD php artisan tinker --execute="echo 'OK';" || exit 1
+
+# Supervisor 실행
+CMD ["supervisord", "-c", "/etc/supervisor/conf.d/supervisord.conf"]
