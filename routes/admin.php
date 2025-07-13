@@ -7,6 +7,8 @@ use App\Http\Controllers\Admin\TagController as AdminTagController;
 use App\Http\Controllers\Admin\CommentController as AdminCommentController;
 use App\Http\Controllers\Admin\PageController as AdminPageController;
 use App\Http\Controllers\CommentController;
+use App\Http\Controllers\SettingsController;
+use App\Http\Controllers\ThemeController;
 use Illuminate\Support\Facades\Route;
 
 // 관리자 대시보드 - admin 미들웨어 적용
@@ -69,6 +71,20 @@ Route::middleware(['auth', 'admin'])->prefix('admin')->name('admin.')->group(fun
     Route::get('/users', function () {
         return view('admin.users.index');
     })->name('users.index');
+    
+    // 설정 관리
+    Route::get('/settings', [SettingsController::class, 'index'])->name('settings.index');
+    Route::put('/settings', [SettingsController::class, 'update'])->name('settings.update');
+    Route::post('/settings/reset', [SettingsController::class, 'reset'])->name('settings.reset');
+    Route::post('/settings/clear-cache', [SettingsController::class, 'clearCache'])->name('settings.clear-cache');
+
+    // 테마 관리
+    Route::get('/themes', [ThemeController::class, 'index'])->name('themes.index');
+    Route::post('/themes/activate', [ThemeController::class, 'activate'])->name('themes.activate');
+    Route::get('/themes/preview', [ThemeController::class, 'preview'])->name('themes.preview');
+    Route::get('/themes/settings', [ThemeController::class, 'settings'])->name('themes.settings');
+    Route::put('/themes/settings', [ThemeController::class, 'updateSettings'])->name('themes.update-settings');
+    Route::post('/themes/clear-cache', [ThemeController::class, 'clearCache'])->name('themes.clear-cache');
     
 });
 

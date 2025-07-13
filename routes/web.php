@@ -8,8 +8,6 @@ use App\Http\Controllers\PostController;
 use App\Http\Controllers\CommentController;
 use App\Http\Controllers\SearchController;
 use App\Http\Controllers\SitemapController;
-use App\Http\Controllers\SettingsController;
-use App\Http\Controllers\ThemeController;
 
 // Analytics 미들웨어를 모든 라우트에 적용
 Route::middleware('analytics')->group(function () {
@@ -96,22 +94,6 @@ Route::middleware('analytics')->group(function () {
 
 });
 
-// 관리자 전용 설정 라우트 (Analytics 미들웨어 제외)
-Route::middleware(['auth', 'admin'])->prefix('admin')->name('admin.')->group(function () {
-    // 설정 관리
-    Route::get('/settings', [SettingsController::class, 'index'])->name('settings.index');
-    Route::put('/settings', [SettingsController::class, 'update'])->name('settings.update');
-    Route::post('/settings/reset', [SettingsController::class, 'reset'])->name('settings.reset');
-    Route::post('/settings/clear-cache', [SettingsController::class, 'clearCache'])->name('settings.clear-cache');
-
-    // 테마 관리
-    Route::get('/themes', [ThemeController::class, 'index'])->name('themes.index');
-    Route::post('/themes/activate', [ThemeController::class, 'activate'])->name('themes.activate');
-    Route::get('/themes/preview', [ThemeController::class, 'preview'])->name('themes.preview');
-    Route::get('/themes/settings', [ThemeController::class, 'settings'])->name('themes.settings');
-    Route::put('/themes/settings', [ThemeController::class, 'updateSettings'])->name('themes.update-settings');
-    Route::post('/themes/clear-cache', [ThemeController::class, 'clearCache'])->name('themes.clear-cache');
-});
 
 // 인증 라우트 포함
 require __DIR__.'/auth.php';
